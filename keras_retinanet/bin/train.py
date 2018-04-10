@@ -17,8 +17,10 @@ limitations under the License.
 """
 
 import argparse
+import functools
 import os
 import sys
+import warnings
 
 import keras
 import keras.preprocessing.image
@@ -38,9 +40,23 @@ from ..callbacks import RedirectModel
 from ..callbacks.eval import Evaluate
 from ..preprocessing.pascal_voc import PascalVocGenerator
 from ..preprocessing.csv_generator import CSVGenerator
+from ..preprocessing.kitti import KittiGenerator
 from ..preprocessing.open_images import OpenImagesGenerator
 from ..utils.transform import random_transform_generator
 from ..utils.keras_version import check_keras_version
+from ..utils.anchors import make_shapes_callback, anchor_targets_bbox
+from ..utils.model import freeze as freeze_model
+
+
+def makedirs(path):
+    # Intended behavior: try to create the directory,
+    # pass if the directory exists already, fails otherwise.
+    # Meant for Python 2.7/3.n compatibility.
+    try:
+        os.makedirs(path)
+    except OSError:
+        if not os.path.isdir(path):
+            raise
 
 
 def get_session():
@@ -55,14 +71,14 @@ def model_with_weights(model, weights, skip_mismatch):
     return model
 
 
-def create_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0):
-    # create "base" model (no NMS)
+def create_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
+    modifier = freeze_model if freeze_backbone else None
 
     # Keras recommends initialising a multi-gpu model on the CPU to ease weight sharing, and to prevent OOM errors.
     # optionally wrap in a parallel model
     if multi_gpu > 1:
         with tf.device('/cpu:0'):
-            model = model_with_weights(backbone_retinanet(num_classes, backbone=backbone, nms=False), weights=weights, skip_mismatch=True)
+            model = model_with_weights(backbone_retinanet(num_classes, backbone=backbone, nms=False, modifier=modifier), weights=weights, skip_mismatch=True)
         training_model = multi_gpu_model(model, gpus=multi_gpu)
 
         # append NMS for prediction only
@@ -72,7 +88,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=
         detections       = layers.NonMaximumSuppression(name='nms')([boxes, classification, detections])
         prediction_model = keras.models.Model(inputs=model.inputs, outputs=model.outputs[:2] + [detections])
     else:
-        model            = model_with_weights(backbone_retinanet(num_classes, backbone=backbone, nms=True), weights=weights, skip_mismatch=True)
+        model            = model_with_weights(backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier), weights=weights, skip_mismatch=True)
         training_model   = model
         prediction_model = model
 
@@ -94,7 +110,7 @@ def create_callbacks(model, training_model, prediction_model, validation_generat
     # save the prediction model
     if args.snapshots:
         # ensure directory created first; otherwise h5py will error after epoch.
-        os.makedirs(args.snapshot_path, exist_ok=True)
+        makedirs(args.snapshot_path)
         checkpoint = keras.callbacks.ModelCheckpoint(
             os.path.join(
                 args.snapshot_path,
@@ -126,7 +142,7 @@ def create_callbacks(model, training_model, prediction_model, validation_generat
             from ..callbacks.coco import CocoEval
 
             # use prediction model for evaluation
-            evaluation = CocoEval(validation_generator)
+            evaluation = CocoEval(validation_generator, tensorboard=tensorboard_callback)
         else:
             evaluation = Evaluate(validation_generator, tensorboard=tensorboard_callback)
         evaluation = RedirectModel(evaluation, prediction_model)
@@ -207,18 +223,28 @@ def create_generators(args):
             batch_size=args.batch_size
         )
 
-        if args.val_annotations:
-            validation_generator = OpenImagesGenerator(
-                args.main_dir,
-                subset='validation',
-                version=args.version,
-                labels_filter=args.labels_filter,
-                annotation_cache_dir=args.annotation_cache_dir,
-                fixed_labels=args.fixed_labels,
-                batch_size=args.batch_size
-            )
-        else:
-            validation_generator = None
+        validation_generator = OpenImagesGenerator(
+            args.main_dir,
+            subset='validation',
+            version=args.version,
+            labels_filter=args.labels_filter,
+            annotation_cache_dir=args.annotation_cache_dir,
+            fixed_labels=args.fixed_labels,
+            batch_size=args.batch_size
+        )
+    elif args.dataset_type == 'kitti':
+        train_generator = KittiGenerator(
+            args.kitti_path,
+            subset='train',
+            transform_generator=transform_generator,
+            batch_size=args.batch_size
+        )
+
+        validation_generator = KittiGenerator(
+            args.kitti_path,
+            subset='val',
+            batch_size=args.batch_size
+        )
     else:
         raise ValueError('Invalid data type received: {}'.format(args.dataset_type))
 
@@ -245,10 +271,20 @@ def check_args(parsed_args):
             "Multi GPU training ({}) and resuming from snapshots ({}) is not supported.".format(parsed_args.multi_gpu,
                                                                                                 parsed_args.snapshot))
 
+    if parsed_args.multi_gpu > 1 and not parsed_args.multi_gpu_force:
+        raise ValueError("Multi-GPU support is experimental, use at own risk! Run with --multi-gpu-force if you wish to continue.")
+
+    if 'resnet' not in parsed_args.backbone:
+        warnings.warn('Using experimental backbone {}. Only resnet50 has been properly tested.'.format(parsed_args.backbone))
+
     if 'resnet' in parsed_args.backbone:
         from ..models.resnet import validate_backbone
     elif 'mobilenet' in parsed_args.backbone:
         from ..models.mobilenet import validate_backbone
+    elif 'vgg' in parsed_args.backbone:
+        from ..models.vgg import validate_backbone
+    elif 'densenet' in parsed_args.backbone:
+        from ..models.densenet import validate_backbone
     else:
         raise NotImplementedError('Backbone \'{}\' not implemented.'.format(parsed_args.backbone))
 
@@ -267,6 +303,9 @@ def parse_args(args):
 
     pascal_parser = subparsers.add_parser('pascal')
     pascal_parser.add_argument('pascal_path', help='Path to dataset directory (ie. /tmp/VOCdevkit).')
+
+    kitti_parser = subparsers.add_parser('kitti')
+    kitti_parser.add_argument('kitti_path', help='Path to dataset directory (ie. /tmp/kitti).')
 
     def csv_list(string):
         return string.split(',')
@@ -293,12 +332,14 @@ def parse_args(args):
     parser.add_argument('--batch-size',      help='Size of the batches.', default=1, type=int)
     parser.add_argument('--gpu',             help='Id of the GPU to use (as reported by nvidia-smi).')
     parser.add_argument('--multi-gpu',       help='Number of GPUs to use for parallel processing.', type=int, default=0)
+    parser.add_argument('--multi-gpu-force', help='Extra flag needed to enable (experimental) multi-gpu support.', action='store_true')
     parser.add_argument('--epochs',          help='Number of epochs to train.', type=int, default=50)
     parser.add_argument('--steps',           help='Number of steps per epoch.', type=int, default=10000)
     parser.add_argument('--snapshot-path',   help='Path to store snapshots of models during training (defaults to \'./snapshots\')', default='./snapshots')
     parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
     parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
     parser.add_argument('--no-evaluation',   help='Disable per epoch evaluation.', dest='evaluation', action='store_false')
+    parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
 
     return check_args(parser.parse_args(args))
 
@@ -324,6 +365,10 @@ def main(args=None):
         from ..models.resnet import resnet_retinanet as retinanet, custom_objects, download_imagenet
     elif 'mobilenet' in args.backbone:
         from ..models.mobilenet import mobilenet_retinanet as retinanet, custom_objects, download_imagenet
+    elif 'vgg' in args.backbone:
+        from ..models.vgg import vgg_retinanet as retinanet, custom_objects, download_imagenet
+    elif 'densenet' in args.backbone:
+        from ..models.densenet import densenet_retinanet as retinanet, custom_objects, download_imagenet
     else:
         raise NotImplementedError('Backbone \'{}\' not implemented.'.format(args.backbone))
 
@@ -347,10 +392,24 @@ def main(args=None):
             weights = download_imagenet(args.backbone)
 
         print('Creating model, this may take a second...')
-        model, training_model, prediction_model = create_models(backbone_retinanet=retinanet, backbone=args.backbone, num_classes=train_generator.num_classes(), weights=weights, multi_gpu=args.multi_gpu)
+        model, training_model, prediction_model = create_models(
+            backbone_retinanet=retinanet,
+            backbone=args.backbone,
+            num_classes=train_generator.num_classes(),
+            weights=weights,
+            multi_gpu=args.multi_gpu,
+            freeze_backbone=args.freeze_backbone
+        )
 
     # print model summary
     print(model.summary())
+
+    # this lets the generator compute backbone layer shapes using the actual backbone model
+    if 'vgg' in args.backbone or 'densenet' in args.backbone:
+        compute_anchor_targets = functools.partial(anchor_targets_bbox, shapes_callback=make_shapes_callback(model))
+        train_generator.compute_anchor_targets = compute_anchor_targets
+        if validation_generator is not None:
+            validation_generator.compute_anchor_targets = compute_anchor_targets
 
     # create the callbacks
     callbacks = create_callbacks(

@@ -100,18 +100,13 @@ class TestNonMaximumSuppression(object):
         ]], dtype=keras.backend.floatx())
         classification = keras.backend.variable(classification)
 
-        detections = np.array([[
-            [1, 2, 3],
-            [4, 5, 6],
-        ]], dtype=keras.backend.floatx())
-        detections = keras.backend.variable(detections)
-
         # compute output
-        actual = non_maximum_suppression_layer.call([boxes, classification, detections])
+        actual = non_maximum_suppression_layer.call([boxes, classification])
         actual = keras.backend.eval(actual)
 
         expected = np.array([[
-            [4, 5, 6],
+            [0, 0],  # now suppressed
+            [0, 1],
         ]], dtype=keras.backend.floatx())
 
         np.testing.assert_array_equal(actual, expected)
@@ -147,28 +142,18 @@ class TestNonMaximumSuppression(object):
         ], dtype=keras.backend.floatx())
         classification = keras.backend.variable(classification)
 
-        detections = np.array([
-            [
-                [1, 2, 3],
-                [4, 5, 6],
-            ],
-            [
-                [7, 8, 9],
-                [10, 11, 12],
-            ],
-        ], dtype=keras.backend.floatx())
-        detections = keras.backend.variable(detections)
-
         # compute output
-        actual = non_maximum_suppression_layer.call([boxes, classification, detections])
+        actual = non_maximum_suppression_layer.call([boxes, classification])
         actual = keras.backend.eval(actual)
 
         expected = np.array([
             [
-                [4, 5, 6],
+                [0, 0],  # now suppressed
+                [0, 1],
             ],
             [
-                [7, 8, 9],
+                [0, 1],
+                [0, 0],  # now suppressed
             ],
         ], dtype=keras.backend.floatx())
 

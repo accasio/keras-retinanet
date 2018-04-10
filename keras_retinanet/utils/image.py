@@ -20,13 +20,13 @@ import time
 import numpy as np
 import scipy.ndimage as ndi
 import cv2
-import PIL
+from PIL import Image
 
 from .transform import change_transform_origin, transform_aabb
 
 
 def read_image_bgr(path):
-    image = np.asarray(PIL.Image.open(path).convert('RGB'))
+    image = np.asarray(Image.open(path).convert('RGB'))
     return image[:, :, ::-1].copy()
 
 
@@ -139,7 +139,7 @@ def apply_transform(matrix, image, params):
     Mathematically speaking, that means that the matrix is a transformation from the transformed image space to the original image space.
 
     Parameters:
-      matrix: A homogenous 3 by 3 matrix holding representing the transformation to apply.
+      matrix: A homogeneous 3 by 3 matrix holding representing the transformation to apply.
       image:  The image to transform.
       params: The transform parameters (see TransformParameters)
     """
@@ -160,7 +160,7 @@ def apply_transform(matrix, image, params):
     return output
 
 
-def resize_image(img, min_side=600, max_side=1024):
+def resize_image(img, min_side=800, max_side=1333):
     (rows, cols, _) = img.shape
 
     smallest_side = min(rows, cols)
@@ -168,7 +168,7 @@ def resize_image(img, min_side=600, max_side=1024):
     # rescale the image so the smallest side is min_side
     scale = min_side / smallest_side
 
-    # check if the largest side is now greater than max_side, wich can happen
+    # check if the largest side is now greater than max_side, which can happen
     # when images have a large aspect ratio
     largest_side = max(rows, cols)
     if largest_side * scale > max_side:
