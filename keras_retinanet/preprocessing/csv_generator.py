@@ -164,16 +164,23 @@ class CSVGenerator(Generator):
         return read_image_bgr(self.image_path(image_index))
 
     def load_annotations(self, image_index):
-        path   = self.image_names[image_index]
+        path = self.image_names[image_index]
         annots = self.image_data[path]
-        boxes  = np.zeros((len(annots), 5))
+        boxes = np.zeros((len(annots), 5))
+        to_clean = []
 
         for idx, annot in enumerate(annots):
+            if (annot['x2'] - annot['x1']) * (annot['y2'] - annot['y1']) < self.min_size:
+                to_clean.append(idx)
+                continue
+
             class_name = annot['class']
             boxes[idx, 0] = float(annot['x1'])
             boxes[idx, 1] = float(annot['y1'])
             boxes[idx, 2] = float(annot['x2'])
             boxes[idx, 3] = float(annot['y2'])
+
             boxes[idx, 4] = self.name_to_label(class_name)
 
+        boxes = np.delete(boxes, to_clean, axis=0)
         return boxes

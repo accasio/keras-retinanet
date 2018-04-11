@@ -55,7 +55,7 @@ def _compute_ap(recall, precision):
     return ap
 
 
-def _get_detections(generator, model, score_threshold=0.05, max_detections=100, save_path=None):
+def _get_detections(generator, model, score_threshold=0.05, max_detections=100, save_path=None, ground_truth=False):
     """ Get the detections from the model using the generator.
 
     The result is a list of lists such that the size is:
@@ -99,7 +99,8 @@ def _get_detections(generator, model, score_threshold=0.05, max_detections=100, 
         image_predicted_labels = indices[1][scores_sort]
 
         if save_path is not None:
-            draw_annotations(raw_image, generator.load_annotations(i), generator=generator)
+            if ground_truth:
+                draw_annotations(raw_image, generator.load_annotations(i), generator=generator)
             draw_detections(raw_image, boxes[0, indices[0][scores_sort], :], nms_classification[0, indices[0][scores_sort], :], generator=generator)
 
             cv2.imwrite(os.path.join(save_path, '{}.png'.format(i)), raw_image)
@@ -129,7 +130,8 @@ def _get_annotations(generator):
     for i in range(generator.size()):
         # load the annotations
         annotations = generator.load_annotations(i)
-
+        if annotations.size == 0:
+            continue
         # copy detections to all_annotations
         for label in range(generator.num_classes()):
             all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
@@ -145,7 +147,8 @@ def evaluate(
     iou_threshold=0.5,
     score_threshold=0.05,
     max_detections=100,
-    save_path=None
+    save_path=None,
+    ground_truth=False
 ):
     """ Evaluate a given dataset using a given model.
 
@@ -160,8 +163,9 @@ def evaluate(
         A dict mapping class names to mAP scores.
     """
     # gather all detections and annotations
-    all_detections     = _get_detections(generator, model, score_threshold=score_threshold, max_detections=max_detections, save_path=save_path)
     all_annotations    = _get_annotations(generator)
+    all_detections = _get_detections(generator, model, score_threshold=score_threshold, max_detections=max_detections,
+                                     save_path=save_path, ground_truth=ground_truth)
     average_precisions = {}
 
     # all_detections = pickle.load(open('all_detections.pkl', 'rb'))
@@ -179,7 +183,10 @@ def evaluate(
         for i in range(generator.size()):
             detections           = all_detections[i][label]
             annotations          = all_annotations[i][label]
-            num_annotations     += annotations.shape[0]
+            if annotations is not None:
+                num_annotations += annotations.shape[0]
+            else:
+                continue
             detected_annotations = []
 
             for d in detections:

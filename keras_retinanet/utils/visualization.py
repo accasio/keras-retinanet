@@ -41,9 +41,13 @@ def draw_caption(image, box, caption):
         box     : A list of 4 elements (x1, y1, x2, y2).
         caption : String containing the text to draw.
     """
+    height, width, channels = image.shape
+    font_size = int(height / 1000)
+    if font_size < 1: font_size = 1
+
     b = np.array(box).astype(int)
-    cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 2)
-    cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 1)
+    cv2.putText(image, caption, (b[0], b[1] - 50), cv2.FONT_HERSHEY_DUPLEX, font_size, (0, 0, 0), 3)
+    cv2.putText(image, caption, (b[0], b[1] - 50), cv2.FONT_HERSHEY_DUPLEX, font_size, (255, 255, 255), 2)
 
 
 def draw_boxes(image, boxes, color, thickness=2):
