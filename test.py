@@ -98,16 +98,7 @@ def main1():
 
         print(my_eval)
 
-        # total_keys = 0
-        # total_val = 0
-        # for key, value in my_eval.items():
-        #     if value > 0:
-        #         total_keys = total_keys + 1
-        #         total_val = total_val + value
-        #
-        # print(total_val/total_keys)
         print(sum(my_eval.values())/39)
-        map_total = map_total + sum(my_eval.values())/39
         keras.backend.clear_session()
         break
 
