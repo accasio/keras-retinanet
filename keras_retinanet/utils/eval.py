@@ -20,6 +20,9 @@ from .anchors import compute_overlap
 from .visualization import draw_detections, draw_annotations
 
 import numpy as np
+import itertools
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 import os
 
 import cv2
@@ -140,6 +143,45 @@ def _get_annotations(generator):
 
     return all_annotations
 
+def plot_confusion_matrix(cm, classes,
+                          normalize=False,
+                          title='Confusion matrix',
+                          cmap=plt.cm.Blues):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    code in part taken from http://scikit-learn.org/stable/auto_examples/model_selection/plot_confusion_matrix.html#sphx-glr-auto-examples-model-selection-plot-confusion-matrix-py
+    """
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        print("Normalized confusion matrix")
+    else:
+        print('Confusion matrix, without normalization')
+
+    print(cm)
+
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=90)
+    plt.yticks(tick_marks, classes)
+
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        if normalize == True and cm[i, j] == 0:
+            fmt = '.0f'
+        elif normalize == True and cm[i, j] != 0:
+            fmt = '.2f'
+        plt.text(j, i, format(cm[i, j], fmt),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+
 
 def evaluate(
     generator,
@@ -232,3 +274,74 @@ def evaluate(
         average_precisions[label] = average_precision
 
     return average_precisions
+
+def ret_confusion_matrix(
+        generator,
+        model,
+        iou_threshold=0.5,
+        score_threshold=0.05,
+        max_detections=100,
+        save_path=None,
+        ground_truth=False
+):
+    """ Evaluate a given dataset using a given model.
+
+    # Arguments
+        generator       : The generator that represents the dataset to evaluate.
+        model           : The model to evaluate.
+        iou_threshold   : The threshold used to consider when a detection is positive or negative.
+        score_threshold : The score confidence threshold to use for detections.
+        max_detections  : The maximum number of detections to use per image.
+        save_path       : The path to save images with visualized detections to.
+    # Returns
+        A dict mapping class names to mAP scores.
+    """
+    # gather all detections and annotations
+
+    all_annotations = _get_annotations(generator)
+    all_detections = _get_detections(generator, model, score_threshold=score_threshold, max_detections=max_detections,
+                                     save_path=save_path, ground_truth=ground_truth)
+
+    # all_detections = pickle.load(open('all_detections.pkl', 'rb'))
+    # all_annotations = pickle.load(open('all_annotations.pkl', 'rb'))
+    # pickle.dump(all_detections, open('all_detections.pkl', 'wb'))
+    # pickle.dump(all_annotations, open('all_annotations.pkl', 'wb'))
+
+    # process detections and annotations
+
+    all_detected = []
+    all_annotated = []
+
+    for i in range(generator.size()):
+        for label in range(generator.num_classes()):
+            annotated_file = all_annotations[i][label]
+            if annotated_file.size == 0:
+                continue
+            for annotation in annotated_file:
+                if annotation.size == 0:
+                    continue
+                found = False
+                for detect_label, detect_on_i in np.ndenumerate(all_detections[i]):
+                    if detect_on_i.size == 0:
+                        continue
+                    if found:
+                        break
+                    for d in detect_on_i:
+                        d = np.array(d)
+                        if annotation.ndim == 1:
+                            annotation = np.array([annotation])
+                        overlaps = compute_overlap(np.expand_dims(d, axis=0), annotation)
+                        assigned_annotation = np.argmax(overlaps, axis=1)
+                        max_overlap = overlaps[0, assigned_annotation]
+
+                        if max_overlap[0] >= iou_threshold:
+                            found = True
+                            all_detected.append(detect_label[0])
+                            all_annotated.append(label)
+                            break
+
+    cnf_matrix = confusion_matrix(all_annotated, all_detected)
+    plt.figure()
+    plot_confusion_matrix(cnf_matrix, classes=list(range(1, generator.num_classes() + 1)), normalize=True,
+                          title='Normalized confusion matrix')
+    plt.show()
